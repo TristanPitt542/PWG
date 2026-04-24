@@ -1,0 +1,30 @@
+# --- Unreal Engine Folders ---
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+Script/
+.vscode/
+.vs/
+*.sln
+*.vc.db
+*.opendb
+
+# --- User-specific files ---
+# These store your specific window layouts and local settings
+Saved/*
+Intermediate/ProjectFiles/
+*.suo
+*.user
+*.userosscache
+*.sln.docuser.tar.gz
+
+# --- External / Built items ---
+# If you use plugins, you may want to ignore their binaries too
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# --- System / IDE Files ---
+.DS_Store
+Thumbs.db

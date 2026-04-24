@@ -21,8 +21,7 @@ class PWG_API AChunk : public AActor
 public:
     AChunk();
 
-    // The only public gateway: The Manager calls this to "upload" the data
-    void RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Material);
+    void RenderChunk(FChunkMeshData MeshData, UMaterialInterface* Material);
 
 protected:
     UPROPERTY(VisibleAnywhere)
