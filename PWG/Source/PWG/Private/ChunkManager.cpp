@@ -51,7 +51,7 @@ void UChunkManager::UpdateChunks()
 
     FVector PlayerLocation = PC->GetPawn()->GetActorLocation();
 
-    // 2. Convert World Position to Chunk Coordinates
+    // Convert World Position to Chunk Coordinates
     // ChunkSizeInUnits = Size * Scale
     float ChunkWidth = CurrentSettings->Size.X * CurrentSettings->Scale;
     float ChunkHeight = CurrentSettings->Size.Y * CurrentSettings->Scale;
@@ -329,7 +329,7 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
             else if (BiomeNoise > 0.55f) // MOUNTAINS
             {
                 float RigidDetail = GetRigidNoise(GlobalX * 0.5f, GlobalY * 0.5f, 6, 0.5f, 2.0f);
-                FinalHeight = RigidDetail * 0.8f; // Scale it down so it's not infinite
+                FinalHeight = RigidDetail * 0.8f;
             }
             else // SMOOTH TRANSITION ZONE
             {
@@ -348,8 +348,7 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
             OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
 
             // World-Space UVs to prevent the "checkerboard" tiling
-            float UVScale = 0.01f;
-            OutData.UV0.Add(FVector2D((Coord.X * Size.X + x) * UVScale, (Coord.Y * Size.Y + y) * UVScale));
+            OutData.UV0.Add(FVector2D((Coord.X * Size.X + x) * CurrentSettings->UVScale, (Coord.Y * Size.Y + y) * CurrentSettings->UVScale));
             OutData.Normals.Add(FVector(0, 0, 1));
         }
     }
