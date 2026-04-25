@@ -262,11 +262,11 @@ void UChunkManager::GenerateMeshData(FIntPoint Coord, FChunkMeshData& OutData)
 
             OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
 
-            float UVScale = CurrentSettings->UVScale;
-            float WorldU = (Coord.X * XSize + x) * UVScale;
-            float WorldV = (Coord.Y * YSize + y) * UVScale;
+            float WorldU = (Coord.X * XSize + x) * CurrentSettings->UVScale;
+            float WorldV = (Coord.Y * YSize + y) * CurrentSettings->UVScale;
 
             OutData.UV0.Add(FVector2D(WorldU, WorldV));
+
             OutData.Normals.Add(FVector(0, 0, 1));
         }
     }
@@ -308,63 +308,112 @@ void UChunkManager::GenerateMeshData(FIntPoint Coord, FChunkMeshData& OutData)
 
 void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutData, FIntPoint Size, float Scale, float ZMult, float NoiseScale)
 {
-    for (int32 y = 0; y <= Size.Y; y++)
+    // lear Previous Data
+    OutData.Vertices.Empty();
+    OutData.UV0.Empty();
+    OutData.Normals.Empty();
+    OutData.Triangles.Empty();
+
+    // Pre Calculate raw height
+    const int32 BufferWidth = Size.X + 3;
+    const int32 BufferHeight = Size.Y + 3;
+    TArray<float> RawHeights;
+    RawHeights.SetNum(BufferWidth * BufferHeight);
+
+    for (int32 y = 0; y < BufferHeight; y++)
     {
-        for (int32 x = 0; x <= Size.X; x++)
+        for (int32 x = 0; x < BufferWidth; x++)
         {
-            // Calculate Global Coordinates
-            float GlobalX = (Coord.X * Size.X + x) * NoiseScale;
-            float GlobalY = (Coord.Y * Size.Y + y) * NoiseScale;
+            // Global coordinates offset to account for the buffer padding
+            float GlobalX = (Coord.X * Size.X + x - 1) * NoiseScale;
+            float GlobalY = (Coord.Y * Size.Y + y - 1) * NoiseScale;
 
-            // Smaller Multiplier So Mountains Are Bigger
-            float BiomeNoise = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.02f, GlobalY * 0.02f)) + 1.0f) * 0.5f;
+            // Biome Selector: Small multiplier (0.01 - 0.1) creates large biome regions
+            float BiomeAlpha = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.1f, GlobalY * 0.1f)) + 1.0f) * 0.5f;
 
-            float FinalHeight = 0.0f;
-            float Detail = (GetFractalNoise(GlobalX, GlobalY, 6, 0.5f, 2.0f) + 1.0f) * 0.5f;
+            // Terrain Generators
+            float PlainsH = (FMath::PerlinNoise2D(FVector2D(GlobalX, GlobalY)) + 1.0f) * 0.5f * 0.1f;
+            float MountainH = GetRigidNoise(GlobalX, GlobalY, 6, 0.5f, 2.0f);
 
-            if (BiomeNoise < 0.45f) // PLAINS
+            // Blend based on mask
+            float BlendW = FMath::SmoothStep(0.4f, 0.6f, BiomeAlpha);
+            RawHeights[x + (y * BufferWidth)] = FMath::Lerp(PlainsH, MountainH, BlendW);
+        }
+    }
+
+    // Generate Smoothed Vertices
+    for (int32 y = 1; y <= Size.Y + 1; y++)
+    {
+        for (int32 x = 1; x <= Size.X + 1; x++)
+        {
+            float Total = 0.0f;
+            int32 Count = 0;
+
+            // 3x3 Smoothing Kernel
+            for (int32 ny = -1; ny <= 1; ny++)
             {
-                FinalHeight = FMath::Pow(Detail, 2.0f) * 0.15f;
-            }
-            else if (BiomeNoise > 0.55f) // MOUNTAINS
-            {
-                float RigidDetail = GetRigidNoise(GlobalX * 0.5f, GlobalY * 0.5f, 6, 0.5f, 2.0f);
-                FinalHeight = RigidDetail * 0.8f;
-            }
-            else // SMOOTH TRANSITION ZONE
-            {
-                float Plains = FMath::Pow(Detail, 2.0f) * 0.15f;
-                float Rigid = GetRigidNoise(GlobalX, GlobalY, 6, 0.5f, 2.0f) * 0.8f;
+                for (int32 nx = -1; nx <= 1; nx++)
+                {
+                    int32 SampleX = x + nx;
+                    int32 SampleY = y + ny;
 
-                // Smoothly Lerp between the two modes over the 0.45 - 0.55 range
-                float Alpha = (BiomeNoise - 0.45f) * 10.0f;
-                FinalHeight = FMath::Lerp(Plains, Rigid, Alpha);
+                    // Bounds check to prevent the crash you encountered
+                    if (RawHeights.IsValidIndex(SampleX + (SampleY * BufferWidth)))
+                    {
+                        Total += RawHeights[SampleX + (SampleY * BufferWidth)];
+                        Count++;
+                    }
+                }
             }
 
-            // Apply the Z multiplier
-            float Z = FinalHeight * ZMult;
+            float SmoothedHeight = (Count > 0) ? (Total / (float)Count) : 0.0f;
+            float FinalZ = SmoothedHeight * ZMult;
 
-            // 6. Store Vertex and UVs
-            OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
+            // Add Vertex Data
+            int32 LX = x - 1;
+            int32 LY = y - 1;
+            OutData.Vertices.Add(FVector(LX * Scale, LY * Scale, FinalZ));
 
-            // World-Space UVs to prevent the "checkerboard" tiling
-            OutData.UV0.Add(FVector2D((Coord.X * Size.X + x) * CurrentSettings->UVScale, (Coord.Y * Size.Y + y) * CurrentSettings->UVScale));
+            // World-Space UVs (prevent tiling artifacts)
+            float WorldU = (Coord.X * Size.X + LX) * 0.1f;
+            float WorldV = (Coord.Y * Size.Y + LY) * 0.1f;
+            OutData.UV0.Add(FVector2D(WorldU, WorldV));
+
             OutData.Normals.Add(FVector(0, 0, 1));
         }
     }
 
-    // Generate Triangles (Same logic as before)
+    // Generate Triangles Alternating to Create Diamond Pattern
     for (int32 y = 0; y < Size.Y; y++)
     {
         for (int32 x = 0; x < Size.X; x++)
         {
-            int32 i = x + (y * (Size.X + 1));
-            OutData.Triangles.Add(i);
-            OutData.Triangles.Add(i + Size.X + 1);
-            OutData.Triangles.Add(i + 1);
-            OutData.Triangles.Add(i + 1);
-            OutData.Triangles.Add(i + Size.X + 1);
-            OutData.Triangles.Add(i + Size.X + 2);
+            int32 Row = Size.X + 1;
+            int32 i = x + (y * Row);
+
+            // Checkerboard pattern for triangulation
+            bool bFlipDiagonal = (x + y) % 2 == 0;
+
+            if (bFlipDiagonal)
+            {
+                OutData.Triangles.Add(i);
+                OutData.Triangles.Add(i + Row);
+                OutData.Triangles.Add(i + Row + 1);
+
+                OutData.Triangles.Add(i);
+                OutData.Triangles.Add(i + Row + 1);
+                OutData.Triangles.Add(i + 1);
+            }
+            else
+            {
+                OutData.Triangles.Add(i);
+                OutData.Triangles.Add(i + Row);
+                OutData.Triangles.Add(i + 1);
+
+                OutData.Triangles.Add(i + 1);
+                OutData.Triangles.Add(i + Row);
+                OutData.Triangles.Add(i + Row + 1);
+            }
         }
     }
 }

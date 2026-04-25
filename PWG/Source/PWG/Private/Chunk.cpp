@@ -14,24 +14,23 @@ AChunk::AChunk()
     ProceduralMesh->SetMobility(EComponentMobility::Static);
 }
 
-void AChunk::RenderChunk(FChunkMeshData MeshData, UMaterialInterface* Material)
+void AChunk::RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Material)
 {
     if (!ProceduralMesh) return;
 
-    // Check if we've already created section 0
-    if (ProceduralMesh->GetNumSections() > 0)
-    {
-        ProceduralMesh->UpdateMeshSection_LinearColor(
-            0, MeshData.Vertices, MeshData.Normals, MeshData.UV0, TArray<FLinearColor>(), MeshData.Tangents
-        );
-    }
-    else
-    {
-        ProceduralMesh->CreateMeshSection_LinearColor(
-            0, MeshData.Vertices, MeshData.Triangles, MeshData.Normals,
-            MeshData.UV0, TArray<FLinearColor>(), MeshData.Tangents, true // Collision
-        );
-    }
+    // Clear existing data to ensure the buffers are fresh
+    ProceduralMesh->ClearAllMeshSections();
+
+    ProceduralMesh->CreateMeshSection_LinearColor(
+        0, 
+        MeshData.Vertices, 
+        MeshData.Triangles, 
+        MeshData.Normals,
+        MeshData.UV0, 
+        TArray<FLinearColor>(), // Empty vertex colors
+        MeshData.Tangents, 
+        true // Create Collision
+    );
 
     if (Material) ProceduralMesh->SetMaterial(0, Material);
 }

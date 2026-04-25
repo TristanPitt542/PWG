@@ -21,9 +21,9 @@ class PWG_API AChunk : public AActor
 public:
     AChunk();
 
-    void RenderChunk(FChunkMeshData MeshData, UMaterialInterface* Material);
+    void RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Material);
 
 protected:
-    UPROPERTY(VisibleAnywhere)
-    UProceduralMeshComponent* ProceduralMesh;
+    UPROPERTY(VisibleAnywhere, Category = "Terrain")
+    class UProceduralMeshComponent* ProceduralMesh;
 };
