@@ -230,192 +230,107 @@ void UChunkManager::GenerateMeshData(FIntPoint Coord, FChunkMeshData& OutData)
 {
     if (!CurrentSettings) return;
 
+    // 1. INITIALIZATION
     const int32 XSize = CurrentSettings->Size.X;
     const int32 YSize = CurrentSettings->Size.Y;
     const float Scale = CurrentSettings->Scale;
 
+    OutData.Vertices.Empty();
+    OutData.Triangles.Empty();
+    OutData.UV0.Empty();
+    OutData.Normals.Empty();
+    OutData.Instances.Empty();
+
+    FRandomStream RS(Coord.X * 1000 + Coord.Y);
+
+    // 2. THE MASTER GENERATION LOOP
     for (int32 y = 0; y <= YSize; y++)
     {
         for (int32 x = 0; x <= XSize; x++)
         {
-            // Calculate Global Coordinates for seamless noise
+            // Global coordinates for seamless noise across chunks
             float GlobalX = (Coord.X * XSize + x) * CurrentSettings->NoiseScale;
             float GlobalY = (Coord.Y * YSize + y) * CurrentSettings->NoiseScale;
 
-            float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f); // Increased octaves to 8 for detail
-
-            // Remap to 0-1
+            // --- BIOME & MOUNTAIN LOGIC ---
+            float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f);
             float NormalizedNoise = (RawNoise + 1.0f) * 0.5f;
 
-            // 1. Create a "Mask" for plains (low frequency noise)
+            // Create the "Mask" for plains vs mountains
             float LowFreq = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.2f, GlobalY * 0.2f)) + 1.0f) * 0.5f;
 
-            // 2. Apply Power to the fractal noise
-            // We use a high power (e.g., 4.0) to flatten valleys
+            // Apply Power to flatten valleys (High power = sharper peaks/flatter base)
             float MountainShape = FMath::Pow(NormalizedNoise, 4.0f);
 
-            // 3. Blend based on the mask
-            // This gives you flat areas (plains) and tall areas (mountains)
+            // Blend based on the mask to create distinct Biomes
             float FinalHeight = FMath::Lerp(MountainShape * 0.05f, MountainShape, LowFreq);
 
             float Z = FinalHeight * CurrentSettings->ZMultiplier;
 
+            // 3. DATA ASSIGNMENT
+            // Vertices use local x/y to stay near the origin and prevent jitter
             OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
 
-            float WorldU = (Coord.X * XSize + x) * CurrentSettings->UVScale;
-            float WorldV = (Coord.Y * YSize + y) * CurrentSettings->UVScale;
+            // UVs: 0-1 range per chunk (Prevents texture streaking at high distances)
+            float U = (float)x / (float)XSize;
+            float V = (float)y / (float)YSize;
+            OutData.UV0.Add(FVector2D(U, V));
 
-            OutData.UV0.Add(FVector2D(WorldU, WorldV));
-
-            OutData.Normals.Add(FVector(0, 0, 1));
+            // 4. PROCEDURAL ASSET SCATTERING
+            // Uses the Biome logic to only spawn trees in "Plains" (low height)
+            if (FinalHeight < 0.12f && RS.FRandRange(0.f, 1.f) > 0.985f)
+            {
+                FInstanceData NewAsset;
+                NewAsset.TypeIndex = 0;
+                FVector LocalPos = FVector(x * Scale, y * Scale, Z);
+                NewAsset.Transform = FTransform(FRotator(0, RS.FRandRange(0, 360), 0), LocalPos, FVector(RS.FRandRange(0.8f, 1.4f)));
+                OutData.Instances.Add(NewAsset);
+            }
         }
     }
 
-    // Generate Vertices
-    for (int32 y = 0; y <= YSize; y++)
-    {
-        for (int32 x = 0; x <= XSize; x++)
-        {
-            float GlobalX = (Coord.X * XSize + x) * CurrentSettings->NoiseScale;
-            float GlobalY = (Coord.Y * YSize + y) * CurrentSettings->NoiseScale;
-
-            float NoiseValue = FMath::PerlinNoise2D(FVector2D(GlobalX, GlobalY));
-            float Z = NoiseValue * CurrentSettings->ZMultiplier;
-
-            OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
-            OutData.UV0.Add(FVector2D(x, y));
-            OutData.Normals.Add(FVector(0, 0, 1));
-        }
-    }
-
-    // Generate Triangles
+    // 5. DIAMOND TRIANGLE PATTERN
     for (int32 y = 0; y < YSize; y++)
     {
         for (int32 x = 0; x < XSize; x++)
         {
-            int32 i = x + (y * (XSize + 1));
+            int32 BottomLeft = x + (y * (XSize + 1));
+            int32 BottomRight = BottomLeft + 1;
+            int32 TopLeft = x + ((y + 1) * (XSize + 1));
+            int32 TopRight = TopLeft + 1;
 
-            OutData.Triangles.Add(i);
-            OutData.Triangles.Add(i + XSize + 1);
-            OutData.Triangles.Add(i + 1);
-
-            OutData.Triangles.Add(i + 1);
-            OutData.Triangles.Add(i + XSize + 1);
-            OutData.Triangles.Add(i + XSize + 2);
-        }
-    }
-}
-
-void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutData, FIntPoint Size, float Scale, float ZMult, float NoiseScale)
-{
-    // lear Previous Data
-    OutData.Vertices.Empty();
-    OutData.UV0.Empty();
-    OutData.Normals.Empty();
-    OutData.Triangles.Empty();
-
-    // Pre Calculate raw height
-    const int32 BufferWidth = Size.X + 3;
-    const int32 BufferHeight = Size.Y + 3;
-    TArray<float> RawHeights;
-    RawHeights.SetNum(BufferWidth * BufferHeight);
-
-    for (int32 y = 0; y < BufferHeight; y++)
-    {
-        for (int32 x = 0; x < BufferWidth; x++)
-        {
-            // Global coordinates offset to account for the buffer padding
-            float GlobalX = (Coord.X * Size.X + x - 1) * NoiseScale;
-            float GlobalY = (Coord.Y * Size.Y + y - 1) * NoiseScale;
-
-            // Biome Selector: Small multiplier (0.01 - 0.1) creates large biome regions
-            float BiomeAlpha = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.1f, GlobalY * 0.1f)) + 1.0f) * 0.5f;
-
-            // Terrain Generators
-            float PlainsH = (FMath::PerlinNoise2D(FVector2D(GlobalX, GlobalY)) + 1.0f) * 0.5f * 0.1f;
-            float MountainH = GetRigidNoise(GlobalX, GlobalY, 6, 0.5f, 2.0f);
-
-            // Blend based on mask
-            float BlendW = FMath::SmoothStep(0.4f, 0.6f, BiomeAlpha);
-            RawHeights[x + (y * BufferWidth)] = FMath::Lerp(PlainsH, MountainH, BlendW);
-        }
-    }
-
-    // Generate Smoothed Vertices
-    for (int32 y = 1; y <= Size.Y + 1; y++)
-    {
-        for (int32 x = 1; x <= Size.X + 1; x++)
-        {
-            float Total = 0.0f;
-            int32 Count = 0;
-
-            // 3x3 Smoothing Kernel
-            for (int32 ny = -1; ny <= 1; ny++)
+            // Alternating "Diamond" triangulation logic
+            if ((x + y) % 2 == 0)
             {
-                for (int32 nx = -1; nx <= 1; nx++)
-                {
-                    int32 SampleX = x + nx;
-                    int32 SampleY = y + ny;
+                OutData.Triangles.Add(BottomLeft);
+                OutData.Triangles.Add(TopLeft);
+                OutData.Triangles.Add(BottomRight);
 
-                    // Bounds check to prevent the crash you encountered
-                    if (RawHeights.IsValidIndex(SampleX + (SampleY * BufferWidth)))
-                    {
-                        Total += RawHeights[SampleX + (SampleY * BufferWidth)];
-                        Count++;
-                    }
-                }
-            }
-
-            float SmoothedHeight = (Count > 0) ? (Total / (float)Count) : 0.0f;
-            float FinalZ = SmoothedHeight * ZMult;
-
-            // Add Vertex Data
-            int32 LX = x - 1;
-            int32 LY = y - 1;
-            OutData.Vertices.Add(FVector(LX * Scale, LY * Scale, FinalZ));
-
-            // World-Space UVs (prevent tiling artifacts)
-            float WorldU = (Coord.X * Size.X + LX) * 0.1f;
-            float WorldV = (Coord.Y * Size.Y + LY) * 0.1f;
-            OutData.UV0.Add(FVector2D(WorldU, WorldV));
-
-            OutData.Normals.Add(FVector(0, 0, 1));
-        }
-    }
-
-    // Generate Triangles Alternating to Create Diamond Pattern
-    for (int32 y = 0; y < Size.Y; y++)
-    {
-        for (int32 x = 0; x < Size.X; x++)
-        {
-            int32 Row = Size.X + 1;
-            int32 i = x + (y * Row);
-
-            // Checkerboard pattern for triangulation
-            bool bFlipDiagonal = (x + y) % 2 == 0;
-
-            if (bFlipDiagonal)
-            {
-                OutData.Triangles.Add(i);
-                OutData.Triangles.Add(i + Row);
-                OutData.Triangles.Add(i + Row + 1);
-
-                OutData.Triangles.Add(i);
-                OutData.Triangles.Add(i + Row + 1);
-                OutData.Triangles.Add(i + 1);
+                OutData.Triangles.Add(BottomRight);
+                OutData.Triangles.Add(TopLeft);
+                OutData.Triangles.Add(TopRight);
             }
             else
             {
-                OutData.Triangles.Add(i);
-                OutData.Triangles.Add(i + Row);
-                OutData.Triangles.Add(i + 1);
+                OutData.Triangles.Add(BottomLeft);
+                OutData.Triangles.Add(TopLeft);
+                OutData.Triangles.Add(TopRight);
 
-                OutData.Triangles.Add(i + 1);
-                OutData.Triangles.Add(i + Row);
-                OutData.Triangles.Add(i + Row + 1);
+                OutData.Triangles.Add(BottomLeft);
+                OutData.Triangles.Add(TopRight);
+                OutData.Triangles.Add(BottomRight);
             }
         }
     }
+
+    TArray<FProcMeshTangent> TempTangents;
+    UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
+        OutData.Vertices,
+        OutData.Triangles,
+        OutData.UV0,
+        OutData.Normals,
+        TempTangents
+    );
 }
 
 void UChunkManager::FinalizeChunk(FIntPoint Coord, FChunkMeshData& Data)

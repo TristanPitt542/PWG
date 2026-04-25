@@ -5,6 +5,18 @@
 #include "ChunkMeshData.generated.h"
 
 USTRUCT(BlueprintType)
+struct FInstanceData
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    int32 TypeIndex; // 0 for Tree, 1 for Rock, etc.
+
+    UPROPERTY()
+    FTransform Transform;
+};
+
+USTRUCT(BlueprintType)
 struct FChunkMeshData
 {
     GENERATED_BODY()
@@ -24,6 +36,9 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mesh Data")
     TArray<FProcMeshTangent> Tangents;
+
+    UPROPERTY()
+    TArray<FInstanceData> Instances;
 
     //Clear Data
     void Clear()
