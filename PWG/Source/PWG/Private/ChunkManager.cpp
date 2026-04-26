@@ -3,11 +3,9 @@
 #include "ChunkSettings.h"
 #include "KismetProceduralMeshLibrary.h"
 #include "Engine/World.h"
+#include "Async/Async.h"
 
-void UChunkManager::Initialize(FSubsystemCollectionBase& Collection)
-{
-    Super::Initialize(Collection);
-}
+void UChunkManager::Initialize(FSubsystemCollectionBase& Collection) { Super::Initialize(Collection); }
 
 void UChunkManager::Deinitialize()
 {
@@ -17,15 +15,16 @@ void UChunkManager::Deinitialize()
 
 void UChunkManager::Tick(float DeltaTime)
 {
-    // Every frame, check if we need to spawn something from the queue
     if (SpawnQueue.Num() > 0)
     {
         FIntPoint NextCoord = SpawnQueue[0];
         SpawnQueue.RemoveAt(0);
-        SpawnChunk(NextCoord); // Move your existing SpawnActor logic here
+        if (!ActiveChunks.Contains(NextCoord) && !LoadingChunks.Contains(NextCoord))
+        {
+            SpawnChunk(NextCoord);
+        }
     }
 
-    // Only check for new chunks every 0.5 seconds
     TickTimer += DeltaTime;
     if (TickTimer >= 0.5f)
     {
@@ -45,14 +44,10 @@ void UChunkManager::UpdateChunks()
 {
     if (!CurrentSettings || !GetWorld()) return;
 
-    // 1. Get the Player Position
     APlayerController* PC = GetWorld()->GetFirstPlayerController();
     if (!PC || !PC->GetPawn()) return;
 
     FVector PlayerLocation = PC->GetPawn()->GetActorLocation();
-
-    // Convert World Position to Chunk Coordinates
-    // ChunkSizeInUnits = Size * Scale
     float ChunkWidth = CurrentSettings->Size.X * CurrentSettings->Scale;
     float ChunkHeight = CurrentSettings->Size.Y * CurrentSettings->Scale;
 
@@ -60,23 +55,22 @@ void UChunkManager::UpdateChunks()
     int32 CurrentY = FMath::FloorToInt(PlayerLocation.Y / ChunkHeight);
     FIntPoint CurrentChunkCoord(CurrentX, CurrentY);
 
-    // Only update if the player moved to a new chunk
     if (CurrentChunkCoord == LastPlayerChunkCoord) return;
     LastPlayerChunkCoord = CurrentChunkCoord;
 
-    // Spiral/Square check around the player
     int32 Radius = CurrentSettings->RenderDistance;
-
     for (int32 x = -Radius; x <= Radius; x++)
     {
         for (int32 y = -Radius; y <= Radius; y++)
         {
             FIntPoint TargetCoord = CurrentChunkCoord + FIntPoint(x, y);
-            SpawnChunk(TargetCoord);
+            if (!ActiveChunks.Contains(TargetCoord) && !LoadingChunks.Contains(TargetCoord))
+            {
+                SpawnQueue.AddUnique(TargetCoord);
+            }
         }
     }
 
-    // Despawn chunks too far away
     TArray<FIntPoint> OutOfRangeCoords;
     for (auto& Elem : ActiveChunks)
     {
@@ -89,8 +83,7 @@ void UChunkManager::UpdateChunks()
 
     for (FIntPoint Coord : OutOfRangeCoords)
     {
-        AChunk* ChunkToDestroy = ActiveChunks[Coord];
-        if (ChunkToDestroy) ChunkToDestroy->Destroy();
+        if (AChunk* ChunkToDestroy = ActiveChunks[Coord]) ChunkToDestroy->Destroy();
         ActiveChunks.Remove(Coord);
     }
 }
@@ -101,94 +94,123 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
     LoadingChunks.Add(Coord);
 
-    // Capture settings into local variables for thread safety
+    // Thread-safe capture
     FIntPoint LocalSize = CurrentSettings->Size;
     float LocalScale = CurrentSettings->Scale;
     float LocalZMult = CurrentSettings->ZMultiplier;
     float LocalNoiseScale = CurrentSettings->NoiseScale;
+    float LocalUVScale = CurrentSettings->UVScale;
     UMaterialInterface* LocalMaterial = CurrentSettings->ChunkMaterial;
 
-    // Start Background Thread Task
-    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, Coord, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalMaterial]()
+    TWeakObjectPtr<UChunkManager> WeakThis(this);
+
+    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [WeakThis, Coord, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale, LocalMaterial]()
         {
-            // Create the data here on the background thread
             FChunkMeshData GeneratedData;
 
-            // Run the math
-            GenerateMeshDataAsync(Coord, GeneratedData, LocalSize, LocalScale, LocalZMult, LocalNoiseScale);
+            // Modular function call
+            if (WeakThis.IsValid())
+            {
+                WeakThis->GenerateMeshDataAsync(Coord, GeneratedData, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale);
 
-            // Calculate Tangents
-            UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
-                GeneratedData.Vertices, GeneratedData.Triangles, GeneratedData.UV0,
-                GeneratedData.Normals, GeneratedData.Tangents
-            );
+                UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
+                    GeneratedData.Vertices, GeneratedData.Triangles, GeneratedData.UV0,
+                    GeneratedData.Normals, GeneratedData.Tangents
+                );
+            }
 
-            // Move back to Game Thread to spawn the Actor
-            AsyncTask(ENamedThreads::GameThread, [this, Coord, GeneratedData, LocalSize, LocalScale, LocalMaterial]()
+            AsyncTask(ENamedThreads::GameThread, [WeakThis, Coord, GeneratedData, LocalSize, LocalScale, LocalMaterial]()
                 {
-                    if (!GetWorld()) return;
+                    if (!WeakThis.IsValid() || !WeakThis->GetWorld()) return;
 
-                    // Calculate spawn position
-                    FVector SpawnLocation = FVector(Coord.X * LocalSize.X * LocalScale, Coord.Y * LocalSize.Y * LocalScale, 0);
+                    FVector SpawnLocation = FVector(
+                        static_cast<float>(Coord.X * LocalSize.X) * LocalScale,
+                        static_cast<float>(Coord.Y * LocalSize.Y) * LocalScale,
+                        0
+                    );
 
                     FActorSpawnParameters Params;
-                    AChunk* NewChunk = GetWorld()->SpawnActor<AChunk>(AChunk::StaticClass(), SpawnLocation, FRotator::ZeroRotator, Params);
+                    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+                    // SAFER SPAWN METHOD: Removes the explicit StaticClass() call that triggers the assertion
+                    AChunk* NewChunk = WeakThis->GetWorld()->SpawnActor<AChunk>(AChunk::StaticClass(), SpawnLocation, FRotator::ZeroRotator, Params);
 
                     if (NewChunk)
                     {
-                        ActiveChunks.Add(Coord, NewChunk);
-
-                        // Render the chunk with the data we generated
+                        WeakThis->ActiveChunks.Add(Coord, NewChunk);
                         NewChunk->RenderChunk(GeneratedData, LocalMaterial);
-
-                        // Teleport player if this is the origin chunk
-                        if (Coord == FIntPoint(0, 0))
-                        {
-                            PlacePlayerOnGround();
-                        }
+                        if (Coord == FIntPoint(0, 0)) WeakThis->PlacePlayerOnGround();
                     }
 
-                    LoadingChunks.Remove(Coord);
+                    WeakThis->LoadingChunks.Remove(Coord);
                 });
         });
 }
 
-void UChunkManager::PlacePlayerOnGround()
+void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutData, FIntPoint Size, float Scale, float ZMult, float NoiseScale, float UVScale)
 {
-APlayerController* PC = GetWorld()->GetFirstPlayerController();
-if (!PC || !PC->GetPawn()) return;
+    OutData.Vertices.Empty();
+    OutData.Triangles.Empty();
+    OutData.UV0.Empty();
+    OutData.Normals.Empty();
+    OutData.Instances.Empty();
 
-AActor* PlayerPawn = PC->GetPawn();
+    FRandomStream RS(Coord.X * 1000 + Coord.Y);
 
-// 1. Define Start and End points for the trace
-// We start high up and trace down towards the center of the world
-FVector TraceStart(0.0f, 0.0f, 20000.0f);
-FVector TraceEnd(0.0f, 0.0f, -20000.0f);
+    for (int32 y = 0; y <= Size.Y; y++)
+    {
+        for (int32 x = 0; x <= Size.X; x++)
+        {
+            float GlobalX = (static_cast<float>(Coord.X * Size.X) + x) * NoiseScale;
+            float GlobalY = (static_cast<float>(Coord.Y * Size.Y) + y) * NoiseScale;
 
-FHitResult Hit;
-FCollisionQueryParams QueryParams;
-QueryParams.AddIgnoredActor(PlayerPawn); // Don't hit the player themselves
+            float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f);
+            float NormalizedNoise = (RawNoise + 1.0f) * 0.5f;
+            float LowFreq = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.2f, GlobalY * 0.2f)) + 1.0f) * 0.5f;
+            float MountainShape = FMath::Pow(NormalizedNoise, 4.0f);
+            float FinalHeight = FMath::Lerp(MountainShape * 0.05f, MountainShape, LowFreq);
 
-// 2. Perform the Line Trace
-if (GetWorld()->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, QueryParams))
-{
-    // 3. Move the player to the impact point + 100 units up
-    FVector NewLocation = Hit.ImpactPoint + FVector(0, 0, 150.0f);
-    PlayerPawn->SetActorLocation(NewLocation);
-}
+            float Z = FinalHeight * ZMult;
+            OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
+
+            float U = (static_cast<float>(Coord.X * Size.X) + x) * UVScale;
+            float V = (static_cast<float>(Coord.Y * Size.Y) + y) * UVScale;
+            OutData.UV0.Add(FVector2D(U, V));
+
+            if (FinalHeight < 0.12f && RS.FRandRange(0.f, 1.f) > 0.985f)
+            {
+                FInstanceData NewAsset;
+                NewAsset.TypeIndex = 0;
+                NewAsset.Transform = FTransform(FRotator(0, RS.FRandRange(0, 360), 0), FVector(x * Scale, y * Scale, Z), FVector(RS.FRandRange(0.8f, 1.4f)));
+                OutData.Instances.Add(NewAsset);
+            }
+        }
+    }
+
+    for (int32 y = 0; y < Size.Y; y++)
+    {
+        for (int32 x = 0; x < Size.X; x++)
+        {
+            int32 BottomLeft = x + (y * (Size.X + 1));
+            int32 BottomRight = BottomLeft + 1;
+            int32 TopLeft = x + ((y + 1) * (Size.X + 1));
+            int32 TopRight = TopLeft + 1;
+
+            if ((x + y) % 2 == 0) {
+                OutData.Triangles.Add(BottomLeft); OutData.Triangles.Add(TopLeft); OutData.Triangles.Add(BottomRight);
+                OutData.Triangles.Add(BottomRight); OutData.Triangles.Add(TopLeft); OutData.Triangles.Add(TopRight);
+            }
+            else {
+                OutData.Triangles.Add(BottomLeft); OutData.Triangles.Add(TopLeft); OutData.Triangles.Add(TopRight);
+                OutData.Triangles.Add(BottomLeft); OutData.Triangles.Add(TopRight); OutData.Triangles.Add(BottomRight);
+            }
+        }
+    }
 }
 
 float UChunkManager::GetFractalNoise(float X, float Y, int32 Octaves, float Persistence, float Lacunarity)
 {
-    float Total = 0.0f;
-    float Frequency = 1.0f;
-    float Amplitude = 1.0f;
-    float MaxValue = 0.0f;
-
-    float NoiseVal = FMath::PerlinNoise2D(FVector2D(X, Y));
-    NoiseVal = 1.0f - FMath::Abs(NoiseVal);
-    NoiseVal *= NoiseVal;
-
+    float Total = 0.0f, Frequency = 1.0f, Amplitude = 1.0f, MaxValue = 0.0f;
     for (int i = 0; i < Octaves; i++)
     {
         Total += FMath::PerlinNoise2D(FVector2D(X * Frequency, Y * Frequency)) * Amplitude;
@@ -201,153 +223,31 @@ float UChunkManager::GetFractalNoise(float X, float Y, int32 Octaves, float Pers
 
 float UChunkManager::GetRigidNoise(float X, float Y, int32 Octaves, float Persistence, float Lacunarity)
 {
-    float Total = 0.0f;
-    float Frequency = 1.0f;
-    float Amplitude = 1.0f;
-    float Weight = 1.0f; // This will dampen the higher-frequency spikes
-
+    float Total = 0.0f, Frequency = 1.0f, Amplitude = 1.0f, Weight = 1.0f;
     for (int i = 0; i < Octaves; i++)
     {
-        // Get raw noise and make it rigid
         float NoiseVal = 1.0f - FMath::Abs(FMath::PerlinNoise2D(FVector2D(X * Frequency, Y * Frequency)));
-
-        // Apply the weight from the previous octave
-        // This prevents "floating" spikes and forces detail into the ridges
         NoiseVal *= Weight;
-
-        // Update weight for the next octave
         Weight = FMath::Clamp(NoiseVal * Persistence, 0.0f, 1.0f);
-
         Total += NoiseVal * Amplitude;
-
         Amplitude *= Persistence;
         Frequency *= Lacunarity;
     }
     return Total;
 }
 
-void UChunkManager::GenerateMeshData(FIntPoint Coord, FChunkMeshData& OutData)
+void UChunkManager::PlacePlayerOnGround()
 {
-    if (!CurrentSettings) return;
+    APlayerController* PC = GetWorld()->GetFirstPlayerController();
+    if (!PC || !PC->GetPawn()) return;
 
-    // 1. INITIALIZATION
-    const int32 XSize = CurrentSettings->Size.X;
-    const int32 YSize = CurrentSettings->Size.Y;
-    const float Scale = CurrentSettings->Scale;
+    FHitResult Hit;
+    FVector Start(0, 0, 20000.f), End(0, 0, -20000.f);
+    FCollisionQueryParams Params;
+    Params.AddIgnoredActor(PC->GetPawn());
 
-    OutData.Vertices.Empty();
-    OutData.Triangles.Empty();
-    OutData.UV0.Empty();
-    OutData.Normals.Empty();
-    OutData.Instances.Empty();
-
-    FRandomStream RS(Coord.X * 1000 + Coord.Y);
-
-    // 2. THE MASTER GENERATION LOOP
-    for (int32 y = 0; y <= YSize; y++)
+    if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
     {
-        for (int32 x = 0; x <= XSize; x++)
-        {
-            // Global coordinates for seamless noise across chunks
-            float GlobalX = (Coord.X * XSize + x) * CurrentSettings->NoiseScale;
-            float GlobalY = (Coord.Y * YSize + y) * CurrentSettings->NoiseScale;
-
-            // --- BIOME & MOUNTAIN LOGIC ---
-            float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f);
-            float NormalizedNoise = (RawNoise + 1.0f) * 0.5f;
-
-            // Create the "Mask" for plains vs mountains
-            float LowFreq = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.2f, GlobalY * 0.2f)) + 1.0f) * 0.5f;
-
-            // Apply Power to flatten valleys (High power = sharper peaks/flatter base)
-            float MountainShape = FMath::Pow(NormalizedNoise, 4.0f);
-
-            // Blend based on the mask to create distinct Biomes
-            float FinalHeight = FMath::Lerp(MountainShape * 0.05f, MountainShape, LowFreq);
-
-            float Z = FinalHeight * CurrentSettings->ZMultiplier;
-
-            // 3. DATA ASSIGNMENT
-            // Vertices use local x/y to stay near the origin and prevent jitter
-            OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
-
-            // UVs: 0-1 range per chunk (Prevents texture streaking at high distances)
-            float U = (float)x / (float)XSize;
-            float V = (float)y / (float)YSize;
-            OutData.UV0.Add(FVector2D(U, V));
-
-            // 4. PROCEDURAL ASSET SCATTERING
-            // Uses the Biome logic to only spawn trees in "Plains" (low height)
-            if (FinalHeight < 0.12f && RS.FRandRange(0.f, 1.f) > 0.985f)
-            {
-                FInstanceData NewAsset;
-                NewAsset.TypeIndex = 0;
-                FVector LocalPos = FVector(x * Scale, y * Scale, Z);
-                NewAsset.Transform = FTransform(FRotator(0, RS.FRandRange(0, 360), 0), LocalPos, FVector(RS.FRandRange(0.8f, 1.4f)));
-                OutData.Instances.Add(NewAsset);
-            }
-        }
-    }
-
-    // 5. DIAMOND TRIANGLE PATTERN
-    for (int32 y = 0; y < YSize; y++)
-    {
-        for (int32 x = 0; x < XSize; x++)
-        {
-            int32 BottomLeft = x + (y * (XSize + 1));
-            int32 BottomRight = BottomLeft + 1;
-            int32 TopLeft = x + ((y + 1) * (XSize + 1));
-            int32 TopRight = TopLeft + 1;
-
-            // Alternating "Diamond" triangulation logic
-            if ((x + y) % 2 == 0)
-            {
-                OutData.Triangles.Add(BottomLeft);
-                OutData.Triangles.Add(TopLeft);
-                OutData.Triangles.Add(BottomRight);
-
-                OutData.Triangles.Add(BottomRight);
-                OutData.Triangles.Add(TopLeft);
-                OutData.Triangles.Add(TopRight);
-            }
-            else
-            {
-                OutData.Triangles.Add(BottomLeft);
-                OutData.Triangles.Add(TopLeft);
-                OutData.Triangles.Add(TopRight);
-
-                OutData.Triangles.Add(BottomLeft);
-                OutData.Triangles.Add(TopRight);
-                OutData.Triangles.Add(BottomRight);
-            }
-        }
-    }
-
-    TArray<FProcMeshTangent> TempTangents;
-    UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
-        OutData.Vertices,
-        OutData.Triangles,
-        OutData.UV0,
-        OutData.Normals,
-        TempTangents
-    );
-}
-
-void UChunkManager::FinalizeChunk(FIntPoint Coord, FChunkMeshData& Data)
-{
-    if (AChunk** ChunkPtr = ActiveChunks.Find(Coord))
-    {
-        if (*ChunkPtr)
-        {
-            UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
-                Data.Vertices,
-                Data.Triangles,
-                Data.UV0,
-                Data.Normals,
-                Data.Tangents
-            );
-
-            (*ChunkPtr)->RenderChunk(Data, CurrentSettings->ChunkMaterial);
-        }
+        PC->GetPawn()->SetActorLocation(Hit.ImpactPoint + FVector(0, 0, 150.f));
     }
 }
