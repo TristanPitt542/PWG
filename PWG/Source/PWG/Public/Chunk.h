@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "ChunkMeshData.h" // Ensure FInstanceData is defined here
+#include "ChunkMeshData.h"
 #include "Chunk.generated.h"
 
 class UProceduralMeshComponent;
@@ -33,6 +33,6 @@ protected:
     UPROPERTY(VisibleAnywhere)
     class UHierarchicalInstancedStaticMeshComponent* RockHISMC;
 
-    // Helper to initialize HISMCs
-    void SetupAssetComponent(int32 Index, UStaticMesh* Mesh);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PCG")
+    class UPCGComponent* ChunkPCG;
 };

@@ -94,7 +94,7 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
     LoadingChunks.Add(Coord);
 
-    // Thread-safe capture
+    // Capture settings
     FIntPoint LocalSize = CurrentSettings->Size;
     float LocalScale = CurrentSettings->Scale;
     float LocalZMult = CurrentSettings->ZMultiplier;
@@ -108,14 +108,18 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
         {
             FChunkMeshData GeneratedData;
 
-            // Modular function call
             if (WeakThis.IsValid())
             {
                 WeakThis->GenerateMeshDataAsync(Coord, GeneratedData, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale);
 
+                // CRITICAL FOR AUTO-MATERIAL: 
+                // CalculateTangentsForMesh handles the Normals and Tangents required for slope-blending.
                 UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
-                    GeneratedData.Vertices, GeneratedData.Triangles, GeneratedData.UV0,
-                    GeneratedData.Normals, GeneratedData.Tangents
+                    GeneratedData.Vertices,
+                    GeneratedData.Triangles,
+                    GeneratedData.UV0,
+                    GeneratedData.Normals,
+                    GeneratedData.Tangents
                 );
             }
 
@@ -132,13 +136,16 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                     FActorSpawnParameters Params;
                     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-                    // SAFER SPAWN METHOD: Removes the explicit StaticClass() call that triggers the assertion
                     AChunk* NewChunk = WeakThis->GetWorld()->SpawnActor<AChunk>(AChunk::StaticClass(), SpawnLocation, FRotator::ZeroRotator, Params);
 
                     if (NewChunk)
                     {
                         WeakThis->ActiveChunks.Add(Coord, NewChunk);
+
+                        // Ensure your AChunk::RenderChunk function calls 
+                        // CreateMeshSection with 'bCreateCollision' and 'bSRGB' correctly.
                         NewChunk->RenderChunk(GeneratedData, LocalMaterial);
+
                         if (Coord == FIntPoint(0, 0)) WeakThis->PlacePlayerOnGround();
                     }
 
@@ -152,7 +159,8 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
     OutData.Vertices.Empty();
     OutData.Triangles.Empty();
     OutData.UV0.Empty();
-    OutData.Normals.Empty();
+    OutData.Normals.Empty(); // Ensure this is empty for CalculateTangents to fill
+    OutData.Tangents.Empty();
     OutData.Instances.Empty();
 
     FRandomStream RS(Coord.X * 1000 + Coord.Y);
@@ -166,6 +174,8 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
 
             float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f);
             float NormalizedNoise = (RawNoise + 1.0f) * 0.5f;
+
+            // Masking Mountains
             float LowFreq = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.2f, GlobalY * 0.2f)) + 1.0f) * 0.5f;
             float MountainShape = FMath::Pow(NormalizedNoise, 4.0f);
             float FinalHeight = FMath::Lerp(MountainShape * 0.05f, MountainShape, LowFreq);
@@ -173,10 +183,12 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
             float Z = FinalHeight * ZMult;
             OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
 
+            // UVs need to be World-Space for the material to tile across chunks
             float U = (static_cast<float>(Coord.X * Size.X) + x) * UVScale;
             float V = (static_cast<float>(Coord.Y * Size.Y) + y) * UVScale;
             OutData.UV0.Add(FVector2D(U, V));
 
+            // Instances (Trees/Rocks)
             if (FinalHeight < 0.12f && RS.FRandRange(0.f, 1.f) > 0.985f)
             {
                 FInstanceData NewAsset;
@@ -187,6 +199,7 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
         }
     }
 
+    // Grid Triangulation
     for (int32 y = 0; y < Size.Y; y++)
     {
         for (int32 x = 0; x < Size.X; x++)
@@ -196,14 +209,14 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
             int32 TopLeft = x + ((y + 1) * (Size.X + 1));
             int32 TopRight = TopLeft + 1;
 
-            if ((x + y) % 2 == 0) {
-                OutData.Triangles.Add(BottomLeft); OutData.Triangles.Add(TopLeft); OutData.Triangles.Add(BottomRight);
-                OutData.Triangles.Add(BottomRight); OutData.Triangles.Add(TopLeft); OutData.Triangles.Add(TopRight);
-            }
-            else {
-                OutData.Triangles.Add(BottomLeft); OutData.Triangles.Add(TopLeft); OutData.Triangles.Add(TopRight);
-                OutData.Triangles.Add(BottomLeft); OutData.Triangles.Add(TopRight); OutData.Triangles.Add(BottomRight);
-            }
+            // Using consistent winding order for better normal calculation
+            OutData.Triangles.Add(BottomLeft);
+            OutData.Triangles.Add(TopLeft);
+            OutData.Triangles.Add(BottomRight);
+
+            OutData.Triangles.Add(BottomRight);
+            OutData.Triangles.Add(TopLeft);
+            OutData.Triangles.Add(TopRight);
         }
     }
 }
