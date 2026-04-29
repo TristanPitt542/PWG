@@ -1,6 +1,2 @@
-https://github.com/user-attachments/assets/fdfc1d09-fadd-4cd1-99bc-d2ffdba3a14c
-
-
-
-
-
+<video src="PWG_Recording2.mp4" autoplay loop muted playsinline style="max-width: 100%;">
+</video>
