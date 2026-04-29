@@ -6,7 +6,7 @@ A high-performance Unreal Engine 5 framework for infinite, multithreaded terrain
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 * **Multithreaded Chunking:** Offloads heavy vertex and noise calculations to background threads to prevent game-thread hitches.
 * **Runtime PCG Integration:** Dynamically populates the world with foliage, rocks, and debris using a custom PCG pipeline that "samples" procedural geometry on the fly.
@@ -15,7 +15,7 @@ A high-performance Unreal Engine 5 framework for infinite, multithreaded terrain
 
 ---
 
-## 🛠 Technical Architecture
+## Technical Architecture
 
 ### The Chunk Lifecycle
 Generating foliage on procedural terrain requires strict synchronization between the Mesh, the Physics Engine, and the PCG Graph.
