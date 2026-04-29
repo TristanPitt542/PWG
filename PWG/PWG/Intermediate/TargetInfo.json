@@ -1,0 +1,14 @@
+{
+	"Targets": [
+		{
+			"Name": "PWG",
+			"Path": "..\\Source\\PWG.Target.cs",
+			"Type": "Game"
+		},
+		{
+			"Name": "PWGEditor",
+			"Path": "..\\Source\\PWGEditor.Target.cs",
+			"Type": "Editor"
+		}
+	]
+}

@@ -1,0 +1,18 @@
+/NOLOGO
+/errorReport:prompt
+/MACHINE:x64
+/SUBSYSTEM:WINDOWS
+/DEF
+/NAME:"UnrealEditor-PWG.dll"
+/IGNORE:4221
+/NODEFAULTLIB
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/PWGEditor/Development/UnrealEd/SharedPCH.UnrealEd.Project.ValApi.ValExpApi.Cpp20.h.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/Module.PWG.gen.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/PWG.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/ChunkMeshData.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/PerModuleInline.gen.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/Chunk.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/ChunkManager.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/ChunkSettings.cpp.obj"
+"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/Default.rc2.res"
+/OUT:"E:/Unreal Projects/PWG/PWG/Intermediate/Build/Win64/x64/UnrealEditor/Development/PWG/UnrealEditor-PWG.lib"

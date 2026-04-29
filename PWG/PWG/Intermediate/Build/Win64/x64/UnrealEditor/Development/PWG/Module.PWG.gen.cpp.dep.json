@@ -1,0 +1,28 @@
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\x64\\unrealeditor\\development\\pwg\\module.pwg.gen.cpp",
+        "ProvidedModule": "",
+        "PCH": "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\x64\\pwgeditor\\development\\unrealed\\sharedpch.unrealed.project.valapi.valexpapi.cpp20.h.pch",
+        "Includes": [
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\x64\\unrealeditor\\development\\pwg\\definitions.pwg.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunk.gen.cpp",
+            "e:\\unreal projects\\pwg\\pwg\\source\\pwg\\public\\chunk.h",
+            "e:\\unreal projects\\pwg\\pwg\\source\\pwg\\public\\chunkmeshdata.h",
+            "e:\\epic games\\ue_5.7\\engine\\plugins\\runtime\\proceduralmeshcomponent\\source\\proceduralmeshcomponent\\public\\proceduralmeshcomponent.h",
+            "e:\\epic games\\ue_5.7\\engine\\plugins\\runtime\\proceduralmeshcomponent\\intermediate\\build\\win64\\unrealeditor\\inc\\proceduralmeshcomponent\\uht\\proceduralmeshcomponent.generated.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunkmeshdata.generated.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunk.generated.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunkmanager.gen.cpp",
+            "e:\\unreal projects\\pwg\\pwg\\source\\pwg\\public\\chunkmanager.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunkmanager.generated.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunkmeshdata.gen.cpp",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunksettings.gen.cpp",
+            "e:\\unreal projects\\pwg\\pwg\\source\\pwg\\public\\chunksettings.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\chunksettings.generated.h",
+            "e:\\unreal projects\\pwg\\pwg\\intermediate\\build\\win64\\unrealeditor\\inc\\pwg\\uht\\pwg.init.gen.cpp"
+        ],
+        "ImportedModules": [],
+        "ImportedHeaderUnits": []
+    }
+}
