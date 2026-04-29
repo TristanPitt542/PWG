@@ -94,7 +94,7 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
     LoadingChunks.Add(Coord);
 
-    // Capture settings
+    // Capture settings from the Data Asset
     FIntPoint LocalSize = CurrentSettings->Size;
     float LocalScale = CurrentSettings->Scale;
     float LocalZMult = CurrentSettings->ZMultiplier;
@@ -102,9 +102,13 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
     float LocalUVScale = CurrentSettings->UVScale;
     UMaterialInterface* LocalMaterial = CurrentSettings->ChunkMaterial;
 
+    // Ensure this is typed correctly
+    TSubclassOf<AChunk> LocalChunkClass = CurrentSettings->ChunkClass;
+
     TWeakObjectPtr<UChunkManager> WeakThis(this);
 
-    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [WeakThis, Coord, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale, LocalMaterial]()
+    // FIRST LAMBDA: Added LocalChunkClass to the capture list
+    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [WeakThis, Coord, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale, LocalMaterial, LocalChunkClass]()
         {
             FChunkMeshData GeneratedData;
 
@@ -112,20 +116,16 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
             {
                 WeakThis->GenerateMeshDataAsync(Coord, GeneratedData, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale);
 
-                // CRITICAL FOR AUTO-MATERIAL: 
-                // CalculateTangentsForMesh handles the Normals and Tangents required for slope-blending.
                 UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
-                    GeneratedData.Vertices,
-                    GeneratedData.Triangles,
-                    GeneratedData.UV0,
-                    GeneratedData.Normals,
-                    GeneratedData.Tangents
+                    GeneratedData.Vertices, GeneratedData.Triangles, GeneratedData.UV0,
+                    GeneratedData.Normals, GeneratedData.Tangents
                 );
             }
 
-            AsyncTask(ENamedThreads::GameThread, [WeakThis, Coord, GeneratedData, LocalSize, LocalScale, LocalMaterial]()
+            // SECOND LAMBDA: Added LocalChunkClass to this capture list too!
+            AsyncTask(ENamedThreads::GameThread, [WeakThis, Coord, GeneratedData, LocalSize, LocalScale, LocalMaterial, LocalChunkClass]()
                 {
-                    if (!WeakThis.IsValid() || !WeakThis->GetWorld()) return;
+                    if (!WeakThis.IsValid() || !WeakThis->GetWorld() || !LocalChunkClass) return;
 
                     FVector SpawnLocation = FVector(
                         static_cast<float>(Coord.X * LocalSize.X) * LocalScale,
@@ -136,14 +136,12 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                     FActorSpawnParameters Params;
                     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-                    AChunk* NewChunk = WeakThis->GetWorld()->SpawnActor<AChunk>(AChunk::StaticClass(), SpawnLocation, FRotator::ZeroRotator, Params);
+                    // Now LocalChunkClass is visible here
+                    AChunk* NewChunk = WeakThis->GetWorld()->SpawnActor<AChunk>(LocalChunkClass, SpawnLocation, FRotator::ZeroRotator, Params);
 
                     if (NewChunk)
                     {
                         WeakThis->ActiveChunks.Add(Coord, NewChunk);
-
-                        // Ensure your AChunk::RenderChunk function calls 
-                        // CreateMeshSection with 'bCreateCollision' and 'bSRGB' correctly.
                         NewChunk->RenderChunk(GeneratedData, LocalMaterial);
 
                         if (Coord == FIntPoint(0, 0)) WeakThis->PlacePlayerOnGround();

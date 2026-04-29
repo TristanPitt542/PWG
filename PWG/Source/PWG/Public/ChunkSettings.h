@@ -31,4 +31,7 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain")
     UMaterialInterface* ChunkMaterial;
+
+    UPROPERTY(EditAnywhere, Category = "Settings")
+    TSubclassOf<class AChunk> ChunkClass;
 };

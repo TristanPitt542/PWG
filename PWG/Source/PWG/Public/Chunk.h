@@ -23,16 +23,6 @@ protected:
     UPROPERTY(VisibleAnywhere, Category = "Terrain")
     UProceduralMeshComponent* ProceduralMesh;
 
-    // Array to hold HISMC for different asset types (0: Trees, 1: Rocks, etc.)
-    UPROPERTY(VisibleAnywhere, Category = "Assets")
-    TArray<UHierarchicalInstancedStaticMeshComponent*> AssetComponents;
-
-    UPROPERTY(VisibleAnywhere)
-    class UHierarchicalInstancedStaticMeshComponent* TreeHISMC;
-
-    UPROPERTY(VisibleAnywhere)
-    class UHierarchicalInstancedStaticMeshComponent* RockHISMC;
-
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PCG")
     class UPCGComponent* ChunkPCG;
 };
