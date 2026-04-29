@@ -1,8 +1,0 @@
-{
-	"SourceFiles": [
-		"E:\\Unreal Projects\\PWG\\PWG\\Source\\PWG\\PWG.Build.cs",
-		"E:\\Unreal Projects\\PWG\\PWG\\Source\\PWG.Target.cs",
-		"E:\\Unreal Projects\\PWG\\PWG\\Source\\PWGEditor.Target.cs"
-	],
-	"EngineVersion": "5.7.4"
-}

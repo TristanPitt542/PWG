@@ -1,4 +1,0 @@
-Breadcrumbs 'RDGExecute_RenderThread'
- - FRDGBuilder::SubmitBufferUploads
- - RenderGraphExecute - UpdateAllPrimitiveSceneInfos
- - Frame 23150
