@@ -117,8 +117,11 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                 WeakThis->GenerateMeshDataAsync(Coord, GeneratedData, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale);
 
                 UKismetProceduralMeshLibrary::CalculateTangentsForMesh(
-                    GeneratedData.Vertices, GeneratedData.Triangles, GeneratedData.UV0,
-                    GeneratedData.Normals, GeneratedData.Tangents
+                    GeneratedData.Vertices,
+                    GeneratedData.Triangles,
+                    GeneratedData.UV0,
+                    GeneratedData.Normals,
+                    GeneratedData.Tangents
                 );
             }
 
@@ -127,11 +130,7 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                 {
                     if (!WeakThis.IsValid() || !WeakThis->GetWorld() || !LocalChunkClass) return;
 
-                    FVector SpawnLocation = FVector(
-                        static_cast<float>(Coord.X * LocalSize.X) * LocalScale,
-                        static_cast<float>(Coord.Y * LocalSize.Y) * LocalScale,
-                        0
-                    );
+                    FVector SpawnLocation = FVector::ZeroVector;
 
                     FActorSpawnParameters Params;
                     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -157,64 +156,94 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
     OutData.Vertices.Empty();
     OutData.Triangles.Empty();
     OutData.UV0.Empty();
-    OutData.Normals.Empty(); // Ensure this is empty for CalculateTangents to fill
+    OutData.Normals.Empty();
     OutData.Tangents.Empty();
     OutData.Instances.Empty();
 
-    FRandomStream RS(Coord.X * 1000 + Coord.Y);
+    // 1. Create a HeightMap buffer with a 1-pixel skirt (+1 on all sides)
+    // SampleSize needs to accommodate: Size + 1 (for the end vertex) + 2 (for the skirt)
+    TArray<float> HeightMap;
+    int32 SampleSizeX = Size.X + 3;
+    int32 SampleSizeY = Size.Y + 3;
+    HeightMap.SetNumUninitialized(SampleSizeX * SampleSizeY);
 
+    // 2. Fill the HeightMap (including the invisible skirt)
+    for (int32 y = -1; y <= Size.Y + 1; y++)
+    {
+        for (int32 x = -1; x <= Size.X + 1; x++)
+        {
+            // Use doubles for world-coordinate math to prevent floating point jitter at distance
+            double WorldX = ((double)Coord.X * (double)Size.X) + (double)x;
+            double WorldY = ((double)Coord.Y * (double)Size.Y) + (double)y;
+
+            float GlobalX = (float)WorldX * NoiseScale;
+            float GlobalY = (float)WorldY * NoiseScale;
+
+            // Use the exact same noise logic for every sample
+            float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f);
+            float NormalizedNoise = (RawNoise + 1.0f) * 0.5f;
+            float MountainShape = FMath::Pow(NormalizedNoise, 4.0f);
+            float FinalHeight = MountainShape * ZMult;
+
+            // Map the range [-1, Size+1] to [0, Size+2] for the array
+            int32 Index = (x + 1) + (y + 1) * SampleSizeX;
+            HeightMap[Index] = FinalHeight;
+        }
+    }
+
+    // 3. Generate Visible Mesh Data
     for (int32 y = 0; y <= Size.Y; y++)
     {
         for (int32 x = 0; x <= Size.X; x++)
         {
-            float GlobalX = (static_cast<float>(Coord.X * Size.X) + x) * NoiseScale;
-            float GlobalY = (static_cast<float>(Coord.Y * Size.Y) + y) * NoiseScale;
+            // Center sample index in the HeightMap
+            int32 HMIndex = (x + 1) + (y + 1) * SampleSizeX;
+            float Z = HeightMap[HMIndex];
 
-            float RawNoise = GetFractalNoise(GlobalX, GlobalY, 8, 0.5f, 2.0f);
-            float NormalizedNoise = (RawNoise + 1.0f) * 0.5f;
+            // Position: All chunks spawned at (0,0,0) world origin to avoid precision gaps
+            float VertexX = (static_cast<float>(Coord.X * Size.X) + x) * Scale;
+            float VertexY = (static_cast<float>(Coord.Y * Size.Y) + y) * Scale;
+            OutData.Vertices.Add(FVector(VertexX, VertexY, Z));
 
-            // Masking Mountains
-            float LowFreq = (FMath::PerlinNoise2D(FVector2D(GlobalX * 0.2f, GlobalY * 0.2f)) + 1.0f) * 0.5f;
-            float MountainShape = FMath::Pow(NormalizedNoise, 4.0f);
-            float FinalHeight = FMath::Lerp(MountainShape * 0.05f, MountainShape, LowFreq);
+            // UVs: Consistent world-space mapping
+            OutData.UV0.Add(FVector2D(((float)Coord.X * Size.X + x) * UVScale, ((float)Coord.Y * Size.Y + y) * UVScale));
 
-            float Z = FinalHeight * ZMult;
-            OutData.Vertices.Add(FVector(x * Scale, y * Scale, Z));
+            // 4. SEAMLESS NORMALS: Using the skirt neighbors
+            float H_L = HeightMap[HMIndex - 1];               // Left (x-1)
+            float H_R = HeightMap[HMIndex + 1];               // Right (x+1)
+            float H_D = HeightMap[HMIndex - SampleSizeX];     // Down (y-1)
+            float H_U = HeightMap[HMIndex + SampleSizeX];     // Up (y+1)
 
-            // UVs need to be World-Space for the material to tile across chunks
-            float U = (static_cast<float>(Coord.X * Size.X) + x) * UVScale;
-            float V = (static_cast<float>(Coord.Y * Size.Y) + y) * UVScale;
-            OutData.UV0.Add(FVector2D(U, V));
+            // Calculate slopes (Tangent and Bitangent)
+            FVector SlopeX(2.0f * Scale, 0.0f, H_R - H_L);
+            FVector SlopeY(0.0f, 2.0f * Scale, H_U - H_D);
 
-            // Instances (Trees/Rocks)
-            if (FinalHeight < 0.12f && RS.FRandRange(0.f, 1.f) > 0.985f)
-            {
-                FInstanceData NewAsset;
-                NewAsset.TypeIndex = 0;
-                NewAsset.Transform = FTransform(FRotator(0, RS.FRandRange(0, 360), 0), FVector(x * Scale, y * Scale, Z), FVector(RS.FRandRange(0.8f, 1.4f)));
-                OutData.Instances.Add(NewAsset);
-            }
+            // The cross product ensures the normal is perfectly perpendicular to the slope
+            FVector Normal = FVector::CrossProduct(SlopeY, SlopeX).GetSafeNormal();
+            OutData.Normals.Add(Normal);
+
+            // Standardize Tangent for the normal map to work correctly
+            OutData.Tangents.Add(FProcMeshTangent(SlopeX.GetSafeNormal(), false));
         }
     }
 
-    // Grid Triangulation
+    // 5. Grid Triangulation
     for (int32 y = 0; y < Size.Y; y++)
     {
         for (int32 x = 0; x < Size.X; x++)
         {
-            int32 BottomLeft = x + (y * (Size.X + 1));
-            int32 BottomRight = BottomLeft + 1;
-            int32 TopLeft = x + ((y + 1) * (Size.X + 1));
-            int32 TopRight = TopLeft + 1;
+            int32 i = x + (y * (Size.X + 1));
 
-            // Using consistent winding order for better normal calculation
-            OutData.Triangles.Add(BottomLeft);
-            OutData.Triangles.Add(TopLeft);
-            OutData.Triangles.Add(BottomRight);
-
-            OutData.Triangles.Add(BottomRight);
-            OutData.Triangles.Add(TopLeft);
-            OutData.Triangles.Add(TopRight);
+            // Alternating diagonals helps break up the "grid" tiling look visually
+            bool bAlternate = (x + y) % 2 == 0;
+            if (bAlternate)
+            {
+                OutData.Triangles.Append({ i, i + Size.X + 1, i + Size.X + 2, i, i + Size.X + 2, i + 1 });
+            }
+            else
+            {
+                OutData.Triangles.Append({ i, i + Size.X + 1, i + 1, i + 1, i + Size.X + 1, i + Size.X + 2 });
+            }
         }
     }
 }
