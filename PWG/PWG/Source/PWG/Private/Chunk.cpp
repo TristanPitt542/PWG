@@ -1,4 +1,5 @@
 #include "Chunk.h"
+#include "ChunkMeshData.h"
 #include "PCGComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -7,12 +8,10 @@ AChunk::AChunk()
 {
     PrimaryActorTick.bCanEverTick = false;
 
+    // These names now match the updated header
     ProceduralMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ProceduralMesh"));
     RootComponent = ProceduralMesh;
-
-    // Use Collision
     ProceduralMesh->bUseComplexAsSimpleCollision = true;
-
 
     ChunkPCG = CreateDefaultSubobject<UPCGComponent>(TEXT("ChunkPCG"));
 }

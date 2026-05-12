@@ -1,16 +1,53 @@
 #include "ChunkManager.h"
 #include "Chunk.h"
 #include "ChunkSettings.h"
+#include "ChunkMeshData.h"
+#include "ProceduralMeshComponent.h"
+#include "PCGComponent.h"
 #include "KismetProceduralMeshLibrary.h"
 #include "Engine/World.h"
 #include "Async/Async.h"
+#include "GameFramework/PlayerController.h" // For PlacePlayerOnGround
 
-void UChunkManager::Initialize(FSubsystemCollectionBase& Collection) { Super::Initialize(Collection); }
+void UChunkManager::Initialize(FSubsystemCollectionBase& Collection)
+{ 
+    Super::Initialize(Collection);
+}
 
 void UChunkManager::Deinitialize()
 {
     ActiveChunks.Empty();
     Super::Deinitialize();
+}
+
+void UChunkManager::OnWorldBeginPlay(UWorld& InWorld)
+{
+    // Note: Do NOT call Super::BeginPlay() here, 
+    // Super::OnWorldBeginPlay(InWorld) is fine but often unnecessary for subsystems.
+
+    if (!CurrentSettings) return;
+
+    TSubclassOf<AChunk> LocalChunkClass = CurrentSettings->ChunkClass;
+    if (!LocalChunkClass) return;
+
+    int32 SideLength = (CurrentSettings->RenderDistance * 2) + 1;
+    int32 TotalExpectedChunks = SideLength * SideLength;
+
+    ChunkPool.Reserve(TotalExpectedChunks);
+
+    for (int32 i = 0; i < TotalExpectedChunks; i++)
+    {
+        FActorSpawnParameters Params;
+        // Use InWorld instead of GetWorld() for clarity in the subsystem
+        AChunk* NewChunk = InWorld.SpawnActor<AChunk>(LocalChunkClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
+
+        if (NewChunk)
+        {
+            NewChunk->SetActorHiddenInGame(true);
+            NewChunk->SetActorEnableCollision(false);
+            ChunkPool.Add(NewChunk);
+        }
+    }
 }
 
 void UChunkManager::Tick(float DeltaTime)
@@ -83,7 +120,18 @@ void UChunkManager::UpdateChunks()
 
     for (FIntPoint Coord : OutOfRangeCoords)
     {
-        if (AChunk* ChunkToDestroy = ActiveChunks[Coord]) ChunkToDestroy->Destroy();
+        if (AChunk* ChunkToRecycle = ActiveChunks[Coord])
+        {
+            // Add this line to clear trees/rocks immediately
+            ChunkToRecycle->GetPCGComponent()->Cleanup();
+
+            ChunkToRecycle->SetActorHiddenInGame(true);
+            ChunkToRecycle->SetActorEnableCollision(false);
+            ChunkToRecycle->SetActorTickEnabled(false);
+            ChunkToRecycle->GetProceduralMesh()->ClearAllMeshSections();
+
+            ChunkPool.Add(ChunkToRecycle);
+        }
         ActiveChunks.Remove(Coord);
     }
 }
@@ -102,7 +150,6 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
     float LocalUVScale = CurrentSettings->UVScale;
     UMaterialInterface* LocalMaterial = CurrentSettings->ChunkMaterial;
 
-    // Ensure this is typed correctly
     TSubclassOf<AChunk> LocalChunkClass = CurrentSettings->ChunkClass;
 
     TWeakObjectPtr<UChunkManager> WeakThis(this);
@@ -118,18 +165,27 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
             }
 
-            // SECOND LAMBDA: Added LocalChunkClass to this capture list too!
             AsyncTask(ENamedThreads::GameThread, [WeakThis, Coord, GeneratedData, LocalSize, LocalScale, LocalMaterial, LocalChunkClass]()
                 {
                     if (!WeakThis.IsValid() || !WeakThis->GetWorld() || !LocalChunkClass) return;
 
-                    FVector SpawnLocation = FVector::ZeroVector;
+                    AChunk* NewChunk = nullptr;
 
-                    FActorSpawnParameters Params;
-                    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-                    // Now LocalChunkClass is visible here
-                    AChunk* NewChunk = WeakThis->GetWorld()->SpawnActor<AChunk>(LocalChunkClass, SpawnLocation, FRotator::ZeroRotator, Params);
+                    // Pooling Logic
+                    if (WeakThis->ChunkPool.Num() > 0)
+                    {
+                        NewChunk = WeakThis->ChunkPool.Pop();
+                        NewChunk->SetActorHiddenInGame(false);
+                        NewChunk->SetActorEnableCollision(true);
+                        NewChunk->SetActorTickEnabled(true);
+                        NewChunk->SetActorLocation(FVector::ZeroVector);
+                    }
+                    else
+                    {
+                        FActorSpawnParameters Params;
+                        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+                        NewChunk = WeakThis->GetWorld()->SpawnActor<AChunk>(LocalChunkClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
+                    }
 
                     if (NewChunk)
                     {
@@ -146,12 +202,8 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
 void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutData, FIntPoint Size, float Scale, float ZMult, float NoiseScale, float UVScale)
 {
-    // 1. CLEAR BUFFERS
-    OutData.Vertices.Empty();
-    OutData.Triangles.Empty();
-    OutData.UV0.Empty();
-    OutData.Normals.Empty();
-    OutData.Tangents.Empty();
+    // CLEAR BUFFERS
+    OutData.Clear();
 
     // HEIGHTMAP SAMPLING (Skirt)
     TArray<float> HeightMap;
@@ -263,6 +315,11 @@ float UChunkManager::GetRigidNoise(float X, float Y, int32 Octaves, float Persis
         Frequency *= Lacunarity;
     }
     return Total;
+}
+
+float UChunkManager::GetPerlinNoise(float X, float Y, float Scale)
+{
+    return FMath::PerlinNoise2D(FVector2D(X * Scale, Y * Scale));
 }
 
 void UChunkManager::PlacePlayerOnGround()
