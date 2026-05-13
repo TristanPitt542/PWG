@@ -84,53 +84,71 @@ void UChunkManager::UpdateChunks()
     APlayerController* PC = GetWorld()->GetFirstPlayerController();
     if (!PC || !PC->GetPawn()) return;
 
-    FVector PlayerLocation = PC->GetPawn()->GetActorLocation();
-    float ChunkWidth = CurrentSettings->Size.X * CurrentSettings->Scale;
-    float ChunkHeight = CurrentSettings->Size.Y * CurrentSettings->Scale;
+    FVector PlayerLoc = PC->GetPawn()->GetActorLocation();
 
-    int32 CurrentX = FMath::FloorToInt(PlayerLocation.X / ChunkWidth);
-    int32 CurrentY = FMath::FloorToInt(PlayerLocation.Y / ChunkHeight);
-    FIntPoint CurrentChunkCoord(CurrentX, CurrentY);
+    // Fetch Camera Forward Vector
+    FVector CameraLocation;
+    FRotator CameraRotation;
+    PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
+    FVector CameraForward = CameraRotation.Vector();
 
-    if (CurrentChunkCoord == LastPlayerChunkCoord) return;
-    LastPlayerChunkCoord = CurrentChunkCoord;
+    float ChunkDim = CurrentSettings->Size.X * CurrentSettings->Scale;
+    int32 CenterX = FMath::FloorToInt(PlayerLoc.X / ChunkDim);
+    int32 CenterY = FMath::FloorToInt(PlayerLoc.Y / ChunkDim);
+    FIntPoint CurrentCoord(CenterX, CenterY);
 
     int32 Radius = CurrentSettings->RenderDistance;
+    TSet<FIntPoint> ChunksToKeep;
+
+    // Define the "Safety Bubble" radius
+    float SafetyRadiusSq = FMath::Square(ChunkDim * 2.1f);
+
     for (int32 x = -Radius; x <= Radius; x++)
     {
         for (int32 y = -Radius; y <= Radius; y++)
         {
-            FIntPoint TargetCoord = CurrentChunkCoord + FIntPoint(x, y);
-            if (!ActiveChunks.Contains(TargetCoord) && !LoadingChunks.Contains(TargetCoord))
+            FIntPoint TargetCoord = CurrentCoord + FIntPoint(x, y);
+
+            // Calculate world position and direction
+            FVector ChunkWorldPos(TargetCoord.X * ChunkDim, TargetCoord.Y * ChunkDim, PlayerLoc.Z);
+            FVector DirToChunk = (ChunkWorldPos - CameraLocation).GetSafeNormal();
+
+            float Dot = FVector::DotProduct(CameraForward, DirToChunk);
+            float DistSq = FVector::DistSquared(PlayerLoc, ChunkWorldPos);
+
+            bool bInSafetyBubble = DistSq <= SafetyRadiusSq;
+
+            bool bInCameraCone = Dot > 0.1f;
+
+            if (bInSafetyBubble || bInCameraCone)
             {
-                SpawnQueue.AddUnique(TargetCoord);
+                ChunksToKeep.Add(TargetCoord);
+
+                if (!ActiveChunks.Contains(TargetCoord) && !LoadingChunks.Contains(TargetCoord))
+                {
+                    SpawnQueue.AddUnique(TargetCoord);
+                }
             }
         }
     }
 
-    TArray<FIntPoint> OutOfRangeCoords;
-    for (auto& Elem : ActiveChunks)
+    // De-load chunks that are no longer in the "Keep" set
+    TArray<FIntPoint> ToRecycle;
+    for (auto& Pair : ActiveChunks)
     {
-        if (FMath::Abs(Elem.Key.X - CurrentChunkCoord.X) > Radius + 1 ||
-            FMath::Abs(Elem.Key.Y - CurrentChunkCoord.Y) > Radius + 1)
+        if (!ChunksToKeep.Contains(Pair.Key))
         {
-            OutOfRangeCoords.Add(Elem.Key);
+            ToRecycle.Add(Pair.Key);
         }
     }
 
-    for (FIntPoint Coord : OutOfRangeCoords)
+    for (const FIntPoint& Coord : ToRecycle)
     {
-        if (AChunk* ChunkToRecycle = ActiveChunks[Coord])
+        AChunk* RecycledChunk = ActiveChunks[Coord];
+        if (RecycledChunk)
         {
-            // Add this line to clear trees/rocks immediately
-            ChunkToRecycle->GetPCGComponent()->Cleanup();
-
-            ChunkToRecycle->SetActorHiddenInGame(true);
-            ChunkToRecycle->SetActorEnableCollision(false);
-            ChunkToRecycle->SetActorTickEnabled(false);
-            ChunkToRecycle->GetProceduralMesh()->ClearAllMeshSections();
-
-            ChunkPool.Add(ChunkToRecycle);
+            RecycledChunk->SetActorHiddenInGame(true);
+            ChunkPool.Add(RecycledChunk);
         }
         ActiveChunks.Remove(Coord);
     }
