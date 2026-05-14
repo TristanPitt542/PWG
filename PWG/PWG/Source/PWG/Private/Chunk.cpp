@@ -16,30 +16,34 @@ AChunk::AChunk()
     ChunkPCG = CreateDefaultSubobject<UPCGComponent>(TEXT("ChunkPCG"));
 }
 
-void AChunk::RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Material)
+void AChunk::RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Material, FIntPoint Coord)
 {
     if (!ProceduralMesh) return;
 
-    // Render Terrain
     ProceduralMesh->ClearAllMeshSections();
     if (MeshData.Vertices.Num() > 0)
     {
-        // The last parameter 'true' already handles collision generation internally
         ProceduralMesh->CreateMeshSection_LinearColor(
             0, MeshData.Vertices, MeshData.Triangles, MeshData.Normals,
             MeshData.UV0, TArray<FLinearColor>(), MeshData.Tangents, true
         );
 
         if (Material) ProceduralMesh->SetMaterial(0, Material);
+
+        // Force collision update before PCG samples the surface
+        ProceduralMesh->ContainsPhysicsTriMeshData(true);
     }
 
-    // Trigger PCG
+    // Update the mesh first
+    ProceduralMesh->UpdateBounds();
+    ProceduralMesh->RecreatePhysicsState();
+
     if (ChunkPCG)
     {
-        // UpdateBounds ensures PCG knows how big the mountain is
-        ProceduralMesh->UpdateBounds();
-        ProceduralMesh->RecreatePhysicsState();
-        ChunkPCG->Cleanup();
+        // Sync the component to the new world location
+        ChunkPCG->UpdateComponentToWorld();
+
+        // Trigger the generation
         ChunkPCG->Generate(true);
     }
 }

@@ -17,7 +17,7 @@ public:
     AChunk();
 
     // Declaration for the rendering logic used by ChunkManager
-    void RenderChunk(const FChunkMeshData& MeshData, class UMaterialInterface* Material);
+    void RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Material, FIntPoint Coord);
 
     UProceduralMeshComponent* GetProceduralMesh() const { return ProceduralMesh; }
     UPCGComponent* GetPCGComponent() const { return ChunkPCG; }
@@ -28,4 +28,6 @@ protected:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
     UPCGComponent* ChunkPCG;
+
+    FIntPoint ChunkCoord;
 };

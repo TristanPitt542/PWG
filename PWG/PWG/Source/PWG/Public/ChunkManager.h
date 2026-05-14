@@ -55,4 +55,5 @@ private:
 
     FIntPoint LastPlayerChunkCoord;
     float TickTimer = 0.0f;
+    bool bInitialSpawnComplete = false;
 };

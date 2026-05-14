@@ -22,9 +22,6 @@ void UChunkManager::Deinitialize()
 
 void UChunkManager::OnWorldBeginPlay(UWorld& InWorld)
 {
-    // Note: Do NOT call Super::BeginPlay() here, 
-    // Super::OnWorldBeginPlay(InWorld) is fine but often unnecessary for subsystems.
-
     if (!CurrentSettings) return;
 
     TSubclassOf<AChunk> LocalChunkClass = CurrentSettings->ChunkClass;
@@ -38,7 +35,7 @@ void UChunkManager::OnWorldBeginPlay(UWorld& InWorld)
     for (int32 i = 0; i < TotalExpectedChunks; i++)
     {
         FActorSpawnParameters Params;
-        // Use InWorld instead of GetWorld() for clarity in the subsystem
+
         AChunk* NewChunk = InWorld.SpawnActor<AChunk>(LocalChunkClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
 
         if (NewChunk)
@@ -138,15 +135,36 @@ void UChunkManager::UpdateChunks()
     {
         if (!ChunksToKeep.Contains(Pair.Key))
         {
+            // 1. Get the PCG component safely
+            UPCGComponent* PCGComp = Pair.Value->FindComponentByClass<UPCGComponent>();
+            if (PCGComp)
+            {
+                // 2. This removes all spawned actors and HISM foliage instances
+                PCGComp->Cleanup();
+            }
+
+            // 3. Disable collision and tick to save performance while in pool
+            Pair.Value->SetActorEnableCollision(false);
+            Pair.Value->SetActorTickEnabled(false);
+            Pair.Value->SetActorHiddenInGame(true);
+
             ToRecycle.Add(Pair.Key);
         }
     }
+
 
     for (const FIntPoint& Coord : ToRecycle)
     {
         AChunk* RecycledChunk = ActiveChunks[Coord];
         if (RecycledChunk)
         {
+            UPCGComponent* PCGComp = RecycledChunk->FindComponentByClass<UPCGComponent>();
+            if (PCGComp)
+            {
+                // This physically removes the floating actors seen in the image
+                PCGComp->Cleanup();
+            }
+
             RecycledChunk->SetActorHiddenInGame(true);
             ChunkPool.Add(RecycledChunk);
         }
@@ -208,9 +226,24 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                     if (NewChunk)
                     {
                         WeakThis->ActiveChunks.Add(Coord, NewChunk);
-                        NewChunk->RenderChunk(GeneratedData, LocalMaterial);
+                        NewChunk->RenderChunk(GeneratedData, LocalMaterial, Coord);
 
-                        if (Coord == FIntPoint(0, 0)) WeakThis->PlacePlayerOnGround();
+                        if (Coord == FIntPoint(0, 0) && !WeakThis->bInitialSpawnComplete)
+                        {
+                            // Force the Procedural Mesh to update its physical representation
+                            UProceduralMeshComponent* PMC = NewChunk->FindComponentByClass<UProceduralMeshComponent>();
+                            if (PMC)
+                            {
+                                PMC->UpdateBounds();
+                                PMC->RecreatePhysicsState();
+                            }
+
+                            // Teleport player once the terrain
+                            WeakThis->PlacePlayerOnGround();
+
+
+                            WeakThis->bInitialSpawnComplete = true;
+                        }
                     }
 
                     WeakThis->LoadingChunks.Remove(Coord);
@@ -345,13 +378,37 @@ void UChunkManager::PlacePlayerOnGround()
     APlayerController* PC = GetWorld()->GetFirstPlayerController();
     if (!PC || !PC->GetPawn()) return;
 
-    FHitResult Hit;
-    FVector Start(0, 0, 20000.f), End(0, 0, -20000.f);
     FCollisionQueryParams Params;
     Params.AddIgnoredActor(PC->GetPawn());
+    Params.bTraceComplex = true;
 
-    if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+    // Search Parameters
+    const int32 MaxAttempts = 20;
+    const float SearchRadius = CurrentSettings->Size.X * CurrentSettings->Scale * 0.4f; // Stay within chunk
+    const float FlatnessThreshold = 0.95f; // Dot product threshold (1.0 is perfectly flat)
+
+    for (int32 i = 0; i < MaxAttempts; i++)
     {
-        PC->GetPawn()->SetActorLocation(Hit.ImpactPoint + FVector(0, 0, 150.f));
+        // Pick a point (Start with center, then radiate out)
+        FVector2D Offset = (i == 0) ? FVector2D::ZeroVector : FMath::RandPointInCircle(SearchRadius);
+        FVector Start(Offset.X, Offset.Y, 50000.f);
+        FVector End(Offset.X, Offset.Y, -50000.f);
+
+        FHitResult Hit;
+        if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+        {
+            // Check if the surface normal is pointing Up
+            float Upness = FVector::DotProduct(Hit.ImpactNormal, FVector::UpVector);
+
+            if (Upness >= FlatnessThreshold)
+            {
+                FVector SafeSpawnLocation = Hit.ImpactPoint + FVector(0.f, 0.f, 150.f);
+                PC->GetPawn()->SetActorLocation(SafeSpawnLocation, false, nullptr, ETeleportType::ResetPhysics);
+                PC->SetControlRotation(FRotator::ZeroRotator);
+                return; // Found a flat spot!
+            }
+        }
     }
+
+    // Fallback: If no flat spot found, use the last hit anyway so they don't stay at spectator height
 }
