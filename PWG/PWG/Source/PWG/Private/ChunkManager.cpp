@@ -7,7 +7,7 @@
 #include "KismetProceduralMeshLibrary.h"
 #include "Engine/World.h"
 #include "Async/Async.h"
-#include "GameFramework/PlayerController.h" // For PlacePlayerOnGround
+#include "GameFramework/PlayerController.h"
 
 void UChunkManager::Initialize(FSubsystemCollectionBase& Collection)
 { 
@@ -27,6 +27,8 @@ void UChunkManager::OnWorldBeginPlay(UWorld& InWorld)
     TSubclassOf<AChunk> LocalChunkClass = CurrentSettings->ChunkClass;
     if (!LocalChunkClass) return;
 
+    // Pre-allocate the actor pool based on the maximum viewport grid coverage
+    // SideLength accounts for negative/positive render distance bounds + center
     int32 SideLength = (CurrentSettings->RenderDistance * 2) + 1;
     int32 TotalExpectedChunks = SideLength * SideLength;
 
@@ -35,11 +37,11 @@ void UChunkManager::OnWorldBeginPlay(UWorld& InWorld)
     for (int32 i = 0; i < TotalExpectedChunks; i++)
     {
         FActorSpawnParameters Params;
-
         AChunk* NewChunk = InWorld.SpawnActor<AChunk>(LocalChunkClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
 
         if (NewChunk)
         {
+            // Warm up the pool: hide and disable physics/collision until acquisition
             NewChunk->SetActorHiddenInGame(true);
             NewChunk->SetActorEnableCollision(false);
             ChunkPool.Add(NewChunk);
@@ -49,6 +51,7 @@ void UChunkManager::OnWorldBeginPlay(UWorld& InWorld)
 
 void UChunkManager::Tick(float DeltaTime)
 {
+    // Process one chunk spawn per frame to amortize cost and prevent game thread hitching
     if (SpawnQueue.Num() > 0)
     {
         FIntPoint NextCoord = SpawnQueue[0];
@@ -59,6 +62,7 @@ void UChunkManager::Tick(float DeltaTime)
         }
     }
 
+    // Throttle distance/frustum evaluation to 2Hz to optimize CPU overhead
     TickTimer += DeltaTime;
     if (TickTimer >= 0.5f)
     {
@@ -83,7 +87,7 @@ void UChunkManager::UpdateChunks()
 
     FVector PlayerLoc = PC->GetPawn()->GetActorLocation();
 
-    // Fetch Camera Forward Vector
+    // Grab view frustum details for directional culling
     FVector CameraLocation;
     FRotator CameraRotation;
     PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
@@ -97,7 +101,7 @@ void UChunkManager::UpdateChunks()
     int32 Radius = CurrentSettings->RenderDistance;
     TSet<FIntPoint> ChunksToKeep;
 
-    // Define the "Safety Bubble" radius
+    // Safety bubble ensures immediate surrounding chunks load regardless of camera orientation (prevents pop-in)
     float SafetyRadiusSq = FMath::Square(ChunkDim * 2.1f);
 
     for (int32 x = -Radius; x <= Radius; x++)
@@ -106,7 +110,6 @@ void UChunkManager::UpdateChunks()
         {
             FIntPoint TargetCoord = CurrentCoord + FIntPoint(x, y);
 
-            // Calculate world position and direction
             FVector ChunkWorldPos(TargetCoord.X * ChunkDim, TargetCoord.Y * ChunkDim, PlayerLoc.Z);
             FVector DirToChunk = (ChunkWorldPos - CameraLocation).GetSafeNormal();
 
@@ -114,8 +117,7 @@ void UChunkManager::UpdateChunks()
             float DistSq = FVector::DistSquared(PlayerLoc, ChunkWorldPos);
 
             bool bInSafetyBubble = DistSq <= SafetyRadiusSq;
-
-            bool bInCameraCone = Dot > 0.1f;
+            bool bInCameraCone = Dot > 0.1f; // Frustum threshold check
 
             if (bInSafetyBubble || bInCameraCone)
             {
@@ -129,21 +131,19 @@ void UChunkManager::UpdateChunks()
         }
     }
 
-    // De-load chunks that are no longer in the "Keep" set
+    // Cull active chunks falling outside the retention set
     TArray<FIntPoint> ToRecycle;
     for (auto& Pair : ActiveChunks)
     {
         if (!ChunksToKeep.Contains(Pair.Key))
         {
-            // 1. Get the PCG component safely
+            // Teardown procedural foliage/instances via PCG before recycling
             UPCGComponent* PCGComp = Pair.Value->FindComponentByClass<UPCGComponent>();
             if (PCGComp)
             {
-                // 2. This removes all spawned actors and HISM foliage instances
                 PCGComp->Cleanup();
             }
 
-            // 3. Disable collision and tick to save performance while in pool
             Pair.Value->SetActorEnableCollision(false);
             Pair.Value->SetActorTickEnabled(false);
             Pair.Value->SetActorHiddenInGame(true);
@@ -151,7 +151,6 @@ void UChunkManager::UpdateChunks()
             ToRecycle.Add(Pair.Key);
         }
     }
-
 
     for (const FIntPoint& Coord : ToRecycle)
     {
@@ -161,7 +160,6 @@ void UChunkManager::UpdateChunks()
             UPCGComponent* PCGComp = RecycledChunk->FindComponentByClass<UPCGComponent>();
             if (PCGComp)
             {
-                // This physically removes the floating actors seen in the image
                 PCGComp->Cleanup();
             }
 
@@ -178,19 +176,18 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
     LoadingChunks.Add(Coord);
 
-    // Capture settings from the Data Asset
+    // Copy data asset properties by value to guarantee thread safety on background tasks
     FIntPoint LocalSize = CurrentSettings->Size;
     float LocalScale = CurrentSettings->Scale;
     float LocalZMult = CurrentSettings->ZMultiplier;
     float LocalNoiseScale = CurrentSettings->NoiseScale;
     float LocalUVScale = CurrentSettings->UVScale;
     UMaterialInterface* LocalMaterial = CurrentSettings->ChunkMaterial;
-
     TSubclassOf<AChunk> LocalChunkClass = CurrentSettings->ChunkClass;
 
     TWeakObjectPtr<UChunkManager> WeakThis(this);
 
-    // FIRST LAMBDA: Added LocalChunkClass to the capture list
+    // Offload heavy FBM noise and vertex mathematical calculations to worker threads
     AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [WeakThis, Coord, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale, LocalMaterial, LocalChunkClass]()
         {
             FChunkMeshData GeneratedData;
@@ -198,16 +195,16 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
             if (WeakThis.IsValid())
             {
                 WeakThis->GenerateMeshDataAsync(Coord, GeneratedData, LocalSize, LocalScale, LocalZMult, LocalNoiseScale, LocalUVScale);
-
             }
 
+            // Route back to Game Thread to apply render data and manage actor/component lifecycles safely
             AsyncTask(ENamedThreads::GameThread, [WeakThis, Coord, GeneratedData, LocalSize, LocalScale, LocalMaterial, LocalChunkClass]()
                 {
                     if (!WeakThis.IsValid() || !WeakThis->GetWorld() || !LocalChunkClass) return;
 
                     AChunk* NewChunk = nullptr;
 
-                    // Pooling Logic
+                    // Pull from pool or instantiate fallback actor if pool is exhausted
                     if (WeakThis->ChunkPool.Num() > 0)
                     {
                         NewChunk = WeakThis->ChunkPool.Pop();
@@ -228,9 +225,9 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                         WeakThis->ActiveChunks.Add(Coord, NewChunk);
                         NewChunk->RenderChunk(GeneratedData, LocalMaterial, Coord);
 
+                        // Bootstrap center origin chunk and drop player onto valid terrain surface
                         if (Coord == FIntPoint(0, 0) && !WeakThis->bInitialSpawnComplete)
                         {
-                            // Force the Procedural Mesh to update its physical representation
                             UProceduralMeshComponent* PMC = NewChunk->FindComponentByClass<UProceduralMeshComponent>();
                             if (PMC)
                             {
@@ -238,10 +235,7 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
                                 PMC->RecreatePhysicsState();
                             }
 
-                            // Teleport player once the terrain
                             WeakThis->PlacePlayerOnGround();
-
-
                             WeakThis->bInitialSpawnComplete = true;
                         }
                     }
@@ -253,19 +247,18 @@ void UChunkManager::SpawnChunk(FIntPoint Coord)
 
 void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutData, FIntPoint Size, float Scale, float ZMult, float NoiseScale, float UVScale)
 {
-    // CLEAR BUFFERS
     OutData.Clear();
 
-    // HEIGHTMAP SAMPLING (Skirt)
+    // Allocate heightmap buffer with a +3 border skirt for robust neighbor cross-product normal evaluation
     TArray<float> HeightMap;
     int32 SampleSizeX = Size.X + 3;
     int32 SampleSizeY = Size.Y + 3;
     HeightMap.SetNumUninitialized(SampleSizeX * SampleSizeY);
 
-    // Precise world-space anchor for this chunk in "noise units"
     double WorldAnchorX = (double)Coord.X * (double)Size.X;
     double WorldAnchorY = (double)Coord.Y * (double)Size.Y;
 
+    // Sample FBM noise across mesh grid + padding
     for (int32 y = -1; y <= Size.Y + 1; y++)
     {
         for (int32 x = -1; x <= Size.X + 1; x++)
@@ -282,32 +275,28 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
         }
     }
 
-    // GENERATE MESH DATA
+    // Populate vertex attributes using absolute world positioning to guarantee seamless chunk borders
     for (int32 y = 0; y <= Size.Y; y++)
     {
         for (int32 x = 0; x <= Size.X; x++)
         {
             int32 HMIndex = (x + 1) + (y + 1) * SampleSizeX;
 
-            // Vertex Position: Using absolute world coordinates ensures alignment
             float VertX = (float)(WorldAnchorX + (double)x) * Scale;
             float VertY = (float)(WorldAnchorY + (double)y) * Scale;
             OutData.Vertices.Add(FVector(VertX, VertY, HeightMap[HMIndex]));
 
-            // UVs: Use Global coordinates to prevent texture wrapping seams
+            // Global UV projection space prevents texture wrapping seams between adjacent chunks
             float GlobalUVX = (float)(WorldAnchorX + (double)x) * UVScale;
             float GlobalUVY = (float)(WorldAnchorY + (double)y) * UVScale;
             OutData.UV0.Add(FVector2D(GlobalUVX, GlobalUVY));
 
-            // 4. SEAMLESS NORMALS
-            // We sample the heightmap at [x-1, x+1, y-1, y+1]
-            // Because we sampled a skirt, these lookups are always valid even at the edges.
+            // Central difference lookup from padding skirt for smooth lighting normals
             float H_L = HeightMap[HMIndex - 1];
             float H_R = HeightMap[HMIndex + 1];
             float H_D = HeightMap[HMIndex - SampleSizeX];
             float H_U = HeightMap[HMIndex + SampleSizeX];
 
-            // Crucial: The "2.0f * Scale" matches the distance between H_L and H_R
             FVector SlopeX(2.0f * Scale, 0.0f, H_R - H_L);
             FVector SlopeY(0.0f, 2.0f * Scale, H_U - H_D);
             
@@ -319,7 +308,7 @@ void UChunkManager::GenerateMeshDataAsync(FIntPoint Coord, FChunkMeshData& OutDa
         }
     }
 
-    // TRIANGULATION
+    // Construct index buffer with alternating triangle diagonals to eliminate grid visual repetition artifacts
     for (int32 y = 0; y < Size.Y; y++)
     {
         for (int32 x = 0; x < Size.X; x++)
@@ -382,14 +371,12 @@ void UChunkManager::PlacePlayerOnGround()
     Params.AddIgnoredActor(PC->GetPawn());
     Params.bTraceComplex = true;
 
-    // Search Parameters
     const int32 MaxAttempts = 20;
-    const float SearchRadius = CurrentSettings->Size.X * CurrentSettings->Scale * 0.4f; // Stay within chunk
-    const float FlatnessThreshold = 0.95f; // Dot product threshold (1.0 is perfectly flat)
+    const float SearchRadius = CurrentSettings->Size.X * CurrentSettings->Scale * 0.4f;
+    const float FlatnessThreshold = 0.95f; // Dot product constraint ensuring surface isn't too steep
 
     for (int32 i = 0; i < MaxAttempts; i++)
     {
-        // Pick a point (Start with center, then radiate out)
         FVector2D Offset = (i == 0) ? FVector2D::ZeroVector : FMath::RandPointInCircle(SearchRadius);
         FVector Start(Offset.X, Offset.Y, 50000.f);
         FVector End(Offset.X, Offset.Y, -50000.f);
@@ -397,7 +384,6 @@ void UChunkManager::PlacePlayerOnGround()
         FHitResult Hit;
         if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
         {
-            // Check if the surface normal is pointing Up
             float Upness = FVector::DotProduct(Hit.ImpactNormal, FVector::UpVector);
 
             if (Upness >= FlatnessThreshold)
@@ -405,10 +391,8 @@ void UChunkManager::PlacePlayerOnGround()
                 FVector SafeSpawnLocation = Hit.ImpactPoint + FVector(0.f, 0.f, 150.f);
                 PC->GetPawn()->SetActorLocation(SafeSpawnLocation, false, nullptr, ETeleportType::ResetPhysics);
                 PC->SetControlRotation(FRotator::ZeroRotator);
-                return; // Found a flat spot!
+                return;
             }
         }
     }
-
-    // Fallback: If no flat spot found, use the last hit anyway so they don't stay at spectator height
 }
