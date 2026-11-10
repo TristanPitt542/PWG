@@ -6,13 +6,17 @@
 
 AChunk::AChunk()
 {
+    // Disable per-frame tick since chunks are updated via ChunkManager calls
     PrimaryActorTick.bCanEverTick = false;
 
-    // These names now match the updated header
+    // Create procedural mesh root component
     ProceduralMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ProceduralMesh"));
     RootComponent = ProceduralMesh;
+    
+    // Enable complex collision for physics and trace queries
     ProceduralMesh->bUseComplexAsSimpleCollision = true;
 
+    // Attach PCG component for procedural foliage/prop placement
     ChunkPCG = CreateDefaultSubobject<UPCGComponent>(TEXT("ChunkPCG"));
 }
 
@@ -20,9 +24,12 @@ void AChunk::RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Mat
 {
     if (!ProceduralMesh) return;
 
+    // Reset previous mesh section before creating a new one
     ProceduralMesh->ClearAllMeshSections();
+    
     if (MeshData.Vertices.Num() > 0)
     {
+        // Populate mesh section with calculated geometry data
         ProceduralMesh->CreateMeshSection_LinearColor(
             0, MeshData.Vertices, MeshData.Triangles, MeshData.Normals,
             MeshData.UV0, TArray<FLinearColor>(), MeshData.Tangents, true
@@ -30,20 +37,18 @@ void AChunk::RenderChunk(const FChunkMeshData& MeshData, UMaterialInterface* Mat
 
         if (Material) ProceduralMesh->SetMaterial(0, Material);
 
-        // Force collision update before PCG samples the surface
+        // Ensure physics mesh data is generated for collision
         ProceduralMesh->ContainsPhysicsTriMeshData(true);
     }
 
-    // Update the mesh first
+    // Refresh mesh bounds and update physics state
     ProceduralMesh->UpdateBounds();
     ProceduralMesh->RecreatePhysicsState();
 
     if (ChunkPCG)
     {
-        // Sync the component to the new world location
+        // Update PCG component transform and run generation
         ChunkPCG->UpdateComponentToWorld();
-
-        // Trigger the generation
         ChunkPCG->Generate(true);
     }
 }
